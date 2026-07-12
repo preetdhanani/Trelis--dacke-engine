@@ -1,0 +1,25 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- Generated output (decks, screenshots, chart-data/brief scratch inputs) ---
+# None of this is needed to run the engine; it's produced by running it.
+output/
+
+# --- Spike: keep the throwaway source + FINDINGS.md as the validation record,
+#     but not the generated fixtures/outputs it produces ---
+spike/output/
+spike/assets/
+
+# --- Local tooling / editor / OS state ---
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~

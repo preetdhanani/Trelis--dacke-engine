@@ -1,0 +1,397 @@
+{
+  "template_name": "Master Deck",
+  "template_version": "1.0",
+  "pipeline": "Claude -> JSON slide-specs -> python-pptx renderer",
+  "fill_protocol": [
+    "1. Pick a layout by 'layout_id'.",
+    "2. Duplicate the matching template slide (slide_index).",
+    "3. For each slot, find the shape where shape.name == slot.shape_name.",
+    "4. text  -> set run text on that shape.",
+    "5. bullets -> one paragraph per item (respect max_items / max_chars_per_item).",
+    "6. image -> insert a picture at slot.geometry_in (inches); remove the grey placeholder rect.",
+    "7. Never add unnamed shapes; never rename existing ones."
+  ],
+  "brand": {
+    "colors": {
+      "blue_primary": "0957D1",
+      "red_accent": "FF3531",
+      "ink": "111111",
+      "muted": "6B6B6B",
+      "surface": "FFFFFF",
+      "placeholder_fill": "EEEEEE"
+    },
+    "wordmark": "YOUR BRAND",
+    "claims": [
+      "Your tagline here."
+    ],
+    "fonts": {
+      "display": "Cambria",
+      "body": "Calibri",
+      "note": "STAND-IN fonts. Replace with your real brand font once known."
+    }
+  },
+  "slide_dimensions_in": {
+    "width": 13.333,
+    "height": 7.5
+  },
+  "shape_name_convention": "IM_<LAYOUT>_<SLOT>  (uppercase; unique per slide)",
+  "layouts": [
+    {
+      "layout_id": "title",
+      "slide_index": 0,
+      "title": "Title Slide",
+      "use_when": "Opening slide of any deck.",
+      "slots": [
+        {
+          "shape_name": "IM_TITLE_DECKTITLE",
+          "geometry_in": {
+            "left_in": 0.9,
+            "top_in": 4.05,
+            "width_in": 11.4,
+            "height_in": 1.2
+          },
+          "type": "text",
+          "role": "deck_title",
+          "required": true,
+          "max_chars": 70
+        },
+        {
+          "shape_name": "IM_TITLE_SUBTITLE",
+          "geometry_in": {
+            "left_in": 0.92,
+            "top_in": 5.25,
+            "width_in": 11.0,
+            "height_in": 0.7
+          },
+          "type": "text",
+          "role": "subtitle",
+          "required": false,
+          "max_chars": 110
+        },
+        {
+          "shape_name": "IM_TITLE_CLAIM",
+          "geometry_in": {
+            "left_in": 0.92,
+            "top_in": 2.75,
+            "width_in": 8.0,
+            "height_in": 0.5
+          },
+          "type": "text",
+          "role": "claim",
+          "required": false,
+          "allowed_values": [
+            "Your tagline here."
+          ]
+        },
+        {
+          "shape_name": "IM_TITLE_META",
+          "geometry_in": {
+            "left_in": 0.92,
+            "top_in": 6.7,
+            "width_in": 11.0,
+            "height_in": 0.5
+          },
+          "type": "text",
+          "role": "meta_line",
+          "required": false,
+          "max_chars": 90
+        }
+      ]
+    },
+    {
+      "layout_id": "section_divider",
+      "slide_index": 1,
+      "title": "Section Divider",
+      "use_when": "Break between major sections of the deck.",
+      "slots": [
+        {
+          "shape_name": "IM_SECTION_NUMBER",
+          "geometry_in": {
+            "left_in": 0.9,
+            "top_in": 2.0,
+            "width_in": 3.0,
+            "height_in": 1.4
+          },
+          "type": "text",
+          "role": "section_number",
+          "required": true,
+          "max_chars": 3
+        },
+        {
+          "shape_name": "IM_SECTION_TITLE",
+          "geometry_in": {
+            "left_in": 0.92,
+            "top_in": 3.35,
+            "width_in": 11.4,
+            "height_in": 1.6
+          },
+          "type": "text",
+          "role": "section_title",
+          "required": true,
+          "max_chars": 48
+        },
+        {
+          "shape_name": "IM_SECTION_KICKER",
+          "geometry_in": {
+            "left_in": 0.95,
+            "top_in": 5.0,
+            "width_in": 11.0,
+            "height_in": 0.6
+          },
+          "type": "text",
+          "role": "kicker",
+          "required": false,
+          "max_chars": 90
+        }
+      ]
+    },
+    {
+      "layout_id": "text_bullets",
+      "slide_index": 2,
+      "title": "Text + Bullets (no image)",
+      "use_when": "Pure argument / list slide with no visual.",
+      "slots": [
+        {
+          "shape_name": "IM_BULLETS_TITLE",
+          "geometry_in": {
+            "left_in": 0.9,
+            "top_in": 1.15,
+            "width_in": 11.5,
+            "height_in": 0.9
+          },
+          "type": "text",
+          "role": "title",
+          "required": true,
+          "max_chars": 60
+        },
+        {
+          "shape_name": "IM_BULLETS_KICKER",
+          "geometry_in": {
+            "left_in": 0.92,
+            "top_in": 2.05,
+            "width_in": 11.5,
+            "height_in": 0.5
+          },
+          "type": "text",
+          "role": "kicker",
+          "required": false,
+          "max_chars": 90
+        },
+        {
+          "shape_name": "IM_BULLETS_BODY",
+          "geometry_in": {
+            "left_in": 0.92,
+            "top_in": 2.75,
+            "width_in": 11.4,
+            "height_in": 3.9
+          },
+          "type": "bullets",
+          "role": "body",
+          "required": true,
+          "max_items": 6,
+          "max_chars_per_item": 95
+        }
+      ]
+    },
+    {
+      "layout_id": "image_only",
+      "slide_index": 3,
+      "title": "Image Only",
+      "use_when": "A single dominant visual — exhibit photo, diagram, screenshot.",
+      "slots": [
+        {
+          "shape_name": "IM_IMAGEONLY_HERO",
+          "geometry_in": {
+            "left_in": 0.9,
+            "top_in": 0.9,
+            "width_in": 11.53,
+            "height_in": 5.4
+          },
+          "type": "image",
+          "role": "hero_image",
+          "required": true,
+          "fit": "cover",
+          "note": "Replace this placeholder rectangle; use its geometry."
+        },
+        {
+          "shape_name": "IM_IMAGEONLY_CAPTION",
+          "geometry_in": {
+            "left_in": 0.92,
+            "top_in": 6.45,
+            "width_in": 9.0,
+            "height_in": 0.5
+          },
+          "type": "text",
+          "role": "caption",
+          "required": false,
+          "max_chars": 110
+        }
+      ]
+    },
+    {
+      "layout_id": "two_column",
+      "slide_index": 4,
+      "title": "Two-Column (text + image)",
+      "use_when": "Narrative on the left, supporting visual on the right.",
+      "slots": [
+        {
+          "shape_name": "IM_TWOCOL_TITLE",
+          "geometry_in": {
+            "left_in": 0.9,
+            "top_in": 1.15,
+            "width_in": 11.5,
+            "height_in": 0.9
+          },
+          "type": "text",
+          "role": "title",
+          "required": true,
+          "max_chars": 60
+        },
+        {
+          "shape_name": "IM_TWOCOL_BODY",
+          "geometry_in": {
+            "left_in": 0.92,
+            "top_in": 2.35,
+            "width_in": 5.7,
+            "height_in": 4.1
+          },
+          "type": "bullets",
+          "role": "body",
+          "required": true,
+          "max_items": 5,
+          "max_chars_per_item": 80
+        },
+        {
+          "shape_name": "IM_TWOCOL_IMAGE",
+          "geometry_in": {
+            "left_in": 7.05,
+            "top_in": 2.15,
+            "width_in": 5.38,
+            "height_in": 4.35
+          },
+          "type": "image",
+          "role": "support_image",
+          "required": true,
+          "fit": "cover"
+        }
+      ]
+    },
+    {
+      "layout_id": "exhibit_data",
+      "slide_index": 5,
+      "title": "Exhibit / Data",
+      "use_when": "A chart or table with a so-what takeaway and source.",
+      "slots": [
+        {
+          "shape_name": "IM_EXHIBIT_TITLE",
+          "geometry_in": {
+            "left_in": 0.9,
+            "top_in": 1.15,
+            "width_in": 11.5,
+            "height_in": 0.85
+          },
+          "type": "text",
+          "role": "title",
+          "required": true,
+          "max_chars": 60
+        },
+        {
+          "shape_name": "IM_EXHIBIT_VISUAL",
+          "geometry_in": {
+            "left_in": 0.92,
+            "top_in": 2.1,
+            "width_in": 8.4,
+            "height_in": 4.35
+          },
+          "type": "image",
+          "role": "exhibit",
+          "required": true,
+          "fit": "contain",
+          "note": "Insert chart/table image, or overlay a native chart at this geometry."
+        },
+        {
+          "shape_name": "IM_EXHIBIT_TAKEAWAY",
+          "geometry_in": {
+            "left_in": 9.55,
+            "top_in": 2.1,
+            "width_in": 2.9,
+            "height_in": 4.0
+          },
+          "type": "text",
+          "role": "takeaway",
+          "required": true,
+          "max_chars": 180
+        },
+        {
+          "shape_name": "IM_EXHIBIT_SOURCE",
+          "geometry_in": {
+            "left_in": 0.92,
+            "top_in": 6.55,
+            "width_in": 9.0,
+            "height_in": 0.4
+          },
+          "type": "text",
+          "role": "source",
+          "required": false,
+          "max_chars": 120
+        }
+      ]
+    },
+    {
+      "layout_id": "quote_callout",
+      "slide_index": 6,
+      "title": "Quote / Callout",
+      "use_when": "A pull quote, client testimonial, or single big statement.",
+      "slots": [
+        {
+          "shape_name": "IM_QUOTE_TEXT",
+          "geometry_in": {
+            "left_in": 1.4,
+            "top_in": 2.1,
+            "width_in": 10.5,
+            "height_in": 2.8
+          },
+          "type": "text",
+          "role": "quote",
+          "required": true,
+          "max_chars": 160
+        },
+        {
+          "shape_name": "IM_QUOTE_ATTRIB",
+          "geometry_in": {
+            "left_in": 1.42,
+            "top_in": 5.0,
+            "width_in": 10.0,
+            "height_in": 0.6
+          },
+          "type": "text",
+          "role": "attribution",
+          "required": false,
+          "max_chars": 70
+        }
+      ]
+    },
+    {
+      "layout_id": "closing_contact",
+      "slide_index": 7,
+      "title": "Closing / Contact",
+      "use_when": "Final slide — wordmark, claim, contact block.",
+      "slots": [
+        {
+          "shape_name": "IM_CLOSING_CONTACT",
+          "geometry_in": {
+            "left_in": 0.92,
+            "top_in": 4.7,
+            "width_in": 11.0,
+            "height_in": 1.6
+          },
+          "type": "text",
+          "role": "contact_block",
+          "required": true,
+          "max_chars": 220,
+          "note": "Newline-separated lines: name / role / email · phone."
+        }
+      ]
+    }
+  ]
+}

@@ -162,6 +162,16 @@ def _call_ollama(model, system_prompt, user_prompt, schema):
             ],
             "format": schema,  # Ollama's structured-output mode: constrain to this JSON schema
             "stream": False,
+            # Reasoning-capable local models (qwen3.x, gemma4, deepseek-r1, ...)
+            # spend generated tokens on an internal "thinking" trace before
+            # any real content -- observed directly as num_predict being
+            # exhausted entirely by `message.thinking`, leaving
+            # `message.content` empty (done_reason="length"). We want
+            # deterministic structured JSON, not a reasoning transcript, so
+            # thinking is turned off for every Ollama call regardless of
+            # whether the given model supports it (harmless no-op on models
+            # that don't).
+            "think": False,
             # num_predict/num_ctx defaults are small enough that a multi-slide
             # M2 response (several slide_intents, each with a few string
             # fields) can truncate mid-JSON -- observed directly as an
@@ -172,7 +182,12 @@ def _call_ollama(model, system_prompt, user_prompt, schema):
     )
     content = result.get("message", {}).get("content")
     if not content:
-        raise ProviderError(f"ollama: no message content in response: {result}")
+        done_reason = result.get("done_reason")
+        hint = (
+            " (hit the output length limit -- num_predict may need to be raised for this model/prompt)"
+            if done_reason == "length" else ""
+        )
+        raise ProviderError(f"ollama: no message content in response{hint}: {result}")
     try:
         return json.loads(content)
     except json.JSONDecodeError as e:

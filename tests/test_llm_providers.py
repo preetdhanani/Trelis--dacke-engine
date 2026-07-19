@@ -5,6 +5,7 @@ from deck_engine.llm_providers import (
     DEFAULT_MODEL,
     PROVIDERS,
     ProviderError,
+    _call_ollama,
     _http_post_json,
     call_structured,
     check_provider_ready,
@@ -99,6 +100,30 @@ class TestHttpPostJsonErrorHandling(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
         self.assertEqual(m.call_count, 2)
         sleep.assert_called()  # backed off before the successful retry
+
+
+class TestCallOllama(unittest.TestCase):
+    """Regression coverage: a reasoning-capable local model (qwen3.x, gemma4,
+    deepseek-r1, ...) can burn its entire num_predict budget on an internal
+    'thinking' trace, leaving message.content empty (done_reason='length').
+    We want deterministic structured JSON, not a reasoning transcript, so
+    thinking must always be disabled on the request."""
+
+    def test_request_disables_thinking(self):
+        fake_result = {"message": {"content": '{"a": 1}'}}
+        with mock.patch(
+            "deck_engine.llm_providers._http_post_json", return_value=fake_result
+        ) as post:
+            _call_ollama("some-model", "sys", "user", {"type": "object"})
+        payload = post.call_args[0][1]
+        self.assertIs(payload["think"], False)
+
+    def test_empty_content_from_length_cutoff_raises_helpful_provider_error(self):
+        fake_result = {"message": {"content": "", "thinking": "..."}, "done_reason": "length"}
+        with mock.patch("deck_engine.llm_providers._http_post_json", return_value=fake_result):
+            with self.assertRaises(ProviderError) as ctx:
+                _call_ollama("some-model", "sys", "user", {"type": "object"})
+        self.assertIn("num_predict", str(ctx.exception))
 
 
 if __name__ == "__main__":

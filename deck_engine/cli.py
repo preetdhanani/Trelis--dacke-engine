@@ -13,10 +13,16 @@ for why); the Planner only plans what goes in between.
 Exhibit slots (M3): a slide the Planner marked needs_exhibit=chart gets a
 native, editable python-pptx chart if the caller supplied its data via
 --chart-data (mapped in planner order to chart-needing slides). Chart data is
-never fabricated (5.6/D9) -- a chart-needing slide with no data supplied, or a
-slide needing a diagram (Diagram Builder is 5.7, M4), renders with its grey
-placeholder rect left in place and is flagged needs_review, never silently
-shipped broken.
+never fabricated (5.6/D9) -- a chart-needing slide with no data supplied
+renders with its grey placeholder rect left in place and is flagged
+needs_review, never silently shipped broken.
+
+Diagram slots (M4): a slide the Planner marked needs_exhibit=diagram gets a
+native, editable chevron-flow diagram (a grouped row of chevron autoshapes,
+5.7) if the caller supplied its ordered step labels via --diagram-data
+(mapped in planner order to diagram-needing slides, exactly like chart data).
+Diagram steps are never fabricated (D9) -- same placeholder + needs_review
+treatment when no data is supplied.
 
 Usage (from the repo root, so the `deck_engine` package is importable):
     python -m deck_engine.cli --brief "..." --out output/deck.pptx
@@ -48,6 +54,7 @@ from .chart_builder import build_chart_spec, suggest_chart_type
 from .config import DEFAULT_TENANT_ID, DEFAULT_PROVIDER
 from .content_generator import generate_single_slide
 from .deck_planner import plan_deck
+from .diagram_builder import build_diagram_data
 from .layout_selector import select_layout
 from .llm_providers import DEFAULT_MODEL, PROVIDERS, check_provider_ready, ProviderError
 from .models.chart import ChartData
@@ -87,6 +94,13 @@ def build_arg_parser():
         help="Interactively confirm/override each chart's suggested type. Default: auto-accept the deterministic "
         "suggestion (unattended), printing what was chosen and why.",
     )
+    p.add_argument(
+        "--diagram-data",
+        type=Path,
+        help="JSON file: a list of diagram-data blocks {steps: [str, ...]} (2-6 linear steps each), mapped in "
+        "planner order to slides the Planner marked needs_exhibit=diagram. Rendered as a native, editable "
+        "chevron-flow diagram (5.7/M4). Diagram steps are never fabricated (D9).",
+    )
     p.add_argument("--out", type=Path, required=True)
     return p
 
@@ -99,6 +113,19 @@ def _load_chart_data(path):
         raw = [raw]
     if not isinstance(raw, list):
         raise ValueError("--chart-data must be a JSON list of chart blocks (or a single block object)")
+    return raw
+
+
+def _load_diagram_data(path):
+    """Read the --diagram-data file into a list of raw diagram-block dicts.
+    Accepts either a top-level JSON list or a single block object. Kept as a
+    twin of _load_chart_data (not a shared helper) so the working chart path
+    stays untouched."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raise ValueError("--diagram-data must be a JSON list of diagram blocks (or a single block object)")
     return raw
 
 
@@ -243,6 +270,45 @@ def main(argv=None):
             file=sys.stderr,
         )
 
+    # Diagram Builder (5.7, M4): resolve user-supplied step labels into native
+    # chevron-flow diagram data, keyed by content-slide index ->
+    # {shape_name: DiagramData}. Mapped in planner order to slides the Planner
+    # marked needs_exhibit=diagram whose layout has an image slot -- the exact
+    # twin of the chart wiring above. Steps are never invented (D9): a
+    # diagram-needing slide with no data keeps its placeholder, flagged at render.
+    diagram_specs_per_slide = {}
+    diagram_blocks = []
+    if args.diagram_data:
+        try:
+            diagram_blocks = _load_diagram_data(args.diagram_data)
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            print(f"error: could not read --diagram-data: {e}", file=sys.stderr)
+            return 1
+
+    diagram_cursor = 0
+    for idx, (layout, spec, intent) in enumerate(content_slides):
+        image_slots = layout.image_slots()
+        if intent.needs_exhibit != "diagram" or not image_slots:
+            continue
+        if diagram_cursor >= len(diagram_blocks):
+            continue  # planner wanted a diagram but no data supplied -- placeholder stays, flagged at render
+        block = diagram_blocks[diagram_cursor]
+        diagram_cursor += 1
+        try:
+            diagram_data = build_diagram_data(**block)
+        except Exception as e:
+            print(f"  FLAGGED slide {idx + 1} ({layout.layout_id}): diagram data invalid, skipping diagram: {e}", file=sys.stderr)
+            continue
+        print(f"  diagram (slide {idx + 1}, {layout.layout_id}): chevron-flow, {len(diagram_data.steps)} step(s)")
+        diagram_specs_per_slide.setdefault(idx, {})[image_slots[0].shape_name] = diagram_data
+
+    if diagram_cursor < len(diagram_blocks):
+        print(
+            f"  WARNING: {len(diagram_blocks) - diagram_cursor} diagram-data block(s) were unused "
+            "(more blocks than diagram-needing slides)",
+            file=sys.stderr,
+        )
+
     # Closing slide: never LLM-generated (real contact info must never be
     # invented). Only fill it if the caller actually gave us something real;
     # otherwise leave the slot unset so the renderer keeps the seed's own
@@ -275,13 +341,16 @@ def main(argv=None):
     for idx, (layout, spec, intent) in enumerate(content_slides):
         seed = output_prs.slides[layout.slide_index]  # always the pristine seed at its fixed index (D13)
         _, skipped = render_slide(
-            output_prs, seed, layout, spec, chart_specs=chart_specs_per_slide.get(idx)
+            output_prs, seed, layout, spec,
+            chart_specs=chart_specs_per_slide.get(idx),
+            diagram_specs=diagram_specs_per_slide.get(idx),
+            brand_colors=manifest.brand.get("colors", {}),
         )
         for shape_name in skipped:
             if intent.needs_exhibit == "chart":
                 reason = "needs a chart but no --chart-data block was provided for it"
             elif intent.needs_exhibit == "diagram":
-                reason = "needs a diagram (Diagram Builder not built yet, M4)"
+                reason = "needs a diagram but no --diagram-data block was provided for it"
             else:
                 reason = "has no exhibit source available"
             print(

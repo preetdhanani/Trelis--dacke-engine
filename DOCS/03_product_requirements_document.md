@@ -97,6 +97,7 @@ For data-bearing slides, the system suggests a chart type from data shape, lets 
 **FR-5 — Process/flow diagram**
 The system builds a process/flow diagram from plain text (user does **not** write node/edge syntax).
 *Accept:* a 4–6 step linear flow and a single-branch flow render legibly, theme-colored, and **editable shape-by-shape**; if editable generation is deferred (S5), output is a rendered image explicitly flagged `non-editable`.
+*Status (M4, SDD v1.6):* **linear flows: met** — 2–6 step chevron flows render brand-colored and editable shape-by-shape (native grouped autoshapes; no image fallback was needed, so the S5 deferral clause never triggered). Two parts deliberately narrowed, not silently dropped: **input is ordered step labels** (`--diagram-data`), not free prose — prose-to-steps extraction is deferred to v2 (an LLM/agent job feeding the same contract); **single-branch flows are deferred** to v2 — a branch point needs a judgement call the deterministic v1 diagram path intentionally doesn't make.
 
 **FR-6 — Per-slide flag & feedback**
 The user can flag any single slide and attach free-text feedback without affecting other slides.

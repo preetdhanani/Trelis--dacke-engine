@@ -1,6 +1,9 @@
 import unittest
 
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+
 from deck_engine.chart_builder import build_chart_spec
+from deck_engine.diagram_builder import build_diagram_data
 from deck_engine.models.chart import ChartData
 from deck_engine.models.slide_spec import SlideSpec
 from deck_engine.renderer import find_shape, render_slide, strip_seed_slides
@@ -146,6 +149,73 @@ class TestRenderer(unittest.TestCase):
         )
         self.assertEqual(skipped, [])
         self.assertEqual(len([s for s in new_slide.shapes if s.has_chart]), 1)
+
+    def test_diagram_data_fills_exhibit_slot_with_grouped_chevron_shapes(self):
+        """M4: an exhibit image slot given a DiagramData renders a native
+        chevron-flow diagram -- ONE group shape named back to the manifest
+        shape_name (D3), whose children are the individually-editable chevrons
+        in step order, with the grey placeholder rect removed (5.7)."""
+        image_only = self.assets.manifest.layout_by_id("image_only")
+        img_slot = image_only.image_slots()[0]
+        prs = self.assets.open_template()
+        seed_slide = prs.slides[image_only.slide_index]
+
+        labels = ["Intake", "Review", "Approve", "Deliver"]
+        diagram_data = build_diagram_data(labels)
+        spec = SlideSpec(layout_id="image_only", content_kind="diagram", slots={})
+        new_slide, skipped = render_slide(
+            prs, seed_slide, image_only, spec, diagram_specs={img_slot.shape_name: diagram_data}
+        )
+
+        self.assertEqual(skipped, [])  # the hero slot was filled by the diagram
+        groups = [s for s in new_slide.shapes if s.shape_type == MSO_SHAPE_TYPE.GROUP]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0].name, img_slot.shape_name)  # stays addressable (D3)
+        self.assertEqual(len(groups[0].shapes), len(labels))
+        self.assertEqual([c.text_frame.text for c in groups[0].shapes], labels)
+
+    def test_diagram_takes_precedence_over_image_path_for_exhibit_slot(self):
+        """When both a diagram and an image path are offered for the same slot,
+        the native (editable) diagram wins -- mirroring the chart precedence."""
+        image_only = self.assets.manifest.layout_by_id("image_only")
+        img_slot = image_only.image_slots()[0]
+        prs = self.assets.open_template()
+        seed_slide = prs.slides[image_only.slide_index]
+
+        diagram_data = build_diagram_data(["One", "Two"])
+        spec = SlideSpec(layout_id="image_only", content_kind="diagram", slots={})
+        new_slide, skipped = render_slide(
+            prs, seed_slide, image_only, spec,
+            image_paths={img_slot.shape_name: "does_not_exist.png"},  # would fail if the picture path were used
+            diagram_specs={img_slot.shape_name: diagram_data},
+        )
+        self.assertEqual(skipped, [])
+        self.assertEqual(len([s for s in new_slide.shapes if s.shape_type == MSO_SHAPE_TYPE.GROUP]), 1)
+
+    def test_chart_takes_precedence_over_diagram_for_same_slot(self):
+        """Defensive ordering: if both a chart spec and a diagram are supplied
+        for the same slot, exactly one native chart is built and no diagram
+        group appears (fill_slot checks chart first)."""
+        exhibit = self.assets.manifest.layout_by_id("exhibit_data")
+        img_slot = exhibit.image_slots()[0]
+        prs = self.assets.open_template()
+        seed_slide = prs.slides[exhibit.slide_index]
+
+        chart_spec = build_chart_spec(ChartData(categories=["A", "B"], series={"x": [1, 2]}))
+        diagram_data = build_diagram_data(["One", "Two"])
+        spec = SlideSpec(
+            layout_id="exhibit_data",
+            content_kind="chart",
+            slots={"IM_EXHIBIT_TITLE": "T", "IM_EXHIBIT_TAKEAWAY": "point"},
+        )
+        new_slide, skipped = render_slide(
+            prs, seed_slide, exhibit, spec,
+            chart_specs={img_slot.shape_name: chart_spec},
+            diagram_specs={img_slot.shape_name: diagram_data},
+        )
+        self.assertEqual(skipped, [])
+        self.assertEqual(len([s for s in new_slide.shapes if s.has_chart]), 1)
+        self.assertEqual(len([s for s in new_slide.shapes if s.shape_type == MSO_SHAPE_TYPE.GROUP]), 0)
 
 
 if __name__ == "__main__":

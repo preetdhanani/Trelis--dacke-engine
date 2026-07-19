@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from deck_engine import cli
 from deck_engine.models.slide_intent import SlideIntent
@@ -140,6 +141,73 @@ class TestCliChartMapping(unittest.TestCase):
         charts = [s for slide in prs.slides for s in slide.shapes if s.has_chart]
         self.assertEqual(len(charts), 0)
         self.assertEqual(len(prs.slides), 4)  # still rendered, just without the chart
+
+
+class TestCliDiagramMapping(unittest.TestCase):
+    """M4: --diagram-data blocks map, in planner order, to slides the Planner
+    marked needs_exhibit=diagram; the Diagram Builder validates the steps and
+    the Renderer produces a native grouped chevron-flow. No LLM is exercised
+    (all mocked) -- this pins the wiring/mapping, not model behavior."""
+
+    def setUp(self):
+        self.manifest = load_tenant_assets("default").manifest
+
+    def _intents(self):
+        return [
+            SlideIntent(purpose="Show the process", suggested_layout="image_only",
+                        headline="How it works", content_outline="the flow", needs_exhibit="diagram"),
+            SlideIntent(purpose="Make a point", suggested_layout="text_bullets",
+                        headline="Point", content_outline="some text", needs_exhibit="none"),
+        ]
+
+    def _fake_generate(self, brief, layout, provider, model, role="opening slide"):
+        return SlideSpec(layout_id=layout.layout_id, content_kind="text", slots={}), None
+
+    def _fake_select(self, intent, manifest, provider, model):
+        return manifest.layout_by_id(intent.suggested_layout), None
+
+    def _run(self, diagram_blocks, extra_args=None):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = Path(tmpdir) / "deck.pptx"
+            data_path = Path(tmpdir) / "diagrams.json"
+            data_path.write_text(json.dumps(diagram_blocks), encoding="utf-8")
+            argv = [
+                "--brief", "mocked",
+                "--contact", "Jane|Role|jane@x.com",
+                "--diagram-data", str(data_path),
+                "--out", str(out_path),
+            ] + (extra_args or [])
+            with mock.patch("deck_engine.cli.check_provider_ready"), mock.patch(
+                "deck_engine.cli.generate_single_slide", side_effect=self._fake_generate
+            ), mock.patch(
+                "deck_engine.cli.plan_deck", return_value=(self._intents(), None)
+            ), mock.patch("deck_engine.cli.select_layout", side_effect=self._fake_select):
+                exit_code = cli.main(argv)
+            self.assertEqual(exit_code, 0)
+            return Presentation(str(out_path))
+
+    def _groups(self, prs):
+        return [s for slide in prs.slides for s in slide.shapes if s.shape_type == MSO_SHAPE_TYPE.GROUP]
+
+    def test_diagram_block_becomes_a_grouped_chevron_flow_on_the_exhibit_slide(self):
+        prs = self._run([{"steps": ["Intake", "Review", "Deliver"]}])
+        # title + image_only(diagram) + text_bullets + closing = 4 slides
+        self.assertEqual(len(prs.slides), 4)
+        groups = self._groups(prs)
+        self.assertEqual(len(groups), 1)  # exactly one chevron-flow group
+        self.assertEqual(len(groups[0].shapes), 3)  # one chevron per step
+
+    def test_diagram_needing_slide_without_data_keeps_placeholder_flagged(self):
+        # no diagram blocks at all -> hero slot stays a placeholder, not a crash
+        prs = self._run([])
+        self.assertEqual(len(self._groups(prs)), 0)
+        self.assertEqual(len(prs.slides), 4)  # still rendered, just without the diagram
+
+    def test_invalid_diagram_block_is_flagged_and_skipped_not_crashed(self):
+        # 1 step violates MIN_STEPS -> block is rejected, placeholder stays, run still succeeds
+        prs = self._run([{"steps": ["only one step"]}])
+        self.assertEqual(len(self._groups(prs)), 0)
+        self.assertEqual(len(prs.slides), 4)
 
 
 if __name__ == "__main__":

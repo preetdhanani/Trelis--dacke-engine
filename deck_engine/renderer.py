@@ -8,13 +8,26 @@ already-filled slide (confirmed necessary by the spike's negative control).
 import copy
 
 from pptx.chart.data import CategoryChartData
+from pptx.dml.color import RGBColor
 from pptx.enum.chart import XL_CHART_TYPE
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.oxml.ns import qn
-from pptx.util import Inches
+from pptx.util import Inches, Pt
 
 from .models.chart import SUPPORTED_CHART_TYPES
 
 IMAGE_RT = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+
+# Chevron-flow diagram styling (5.7, M4). DEFAULT_CHEVRON_HEX is only the
+# fallback for direct/unit-test calls that don't pass brand_colors -- the CLI
+# always threads the tenant's real manifest brand colors through, so a second
+# tenant's diagrams never silently render in tenant-1's blue.
+DEFAULT_CHEVRON_HEX = "0957D1"
+CHEVRON_GAP_IN = 0.12  # visual separation between adjacent chevrons
+CHEVRON_HEIGHT_IN = 1.1  # fixed row height; short/wide for legible interior text
+CHEVRON_FONT_PT = 12
+CHEVRON_FONT_HEX = "FFFFFF"  # white text on a brand-colored chevron
 
 
 def duplicate_slide(output_prs, seed_slide):
@@ -139,7 +152,55 @@ def _add_native_chart(slide, slot, chart_spec):
     return graphic_frame
 
 
-def fill_slot(slide, slot, value, image_source_path=None, chart_spec=None):
+def _add_native_diagram(slide, slot, diagram_data, brand_colors=None):
+    """Insert a native (editable) chevron-flow diagram at the slot's geometry
+    (5.7/M4): N MSO_SHAPE.CHEVRON autoshapes in a single left-to-right row,
+    each shape's own arrow implying "next step" -- no connector/arrowhead API
+    needed. The chevrons are grouped into ONE GroupShape renamed to
+    slot.shape_name so the slot stays addressable by a single manifest name
+    (D3), exactly as _add_native_chart renames its graphic frame; each chevron
+    inside the group remains a real, individually editable autoshape --
+    nothing here is flattened to a picture.
+    """
+    steps = diagram_data.steps
+    n = len(steps)
+    geom = slot.geometry_in
+
+    chevron_height_in = min(CHEVRON_HEIGHT_IN, geom.height_in)
+    total_gap_in = CHEVRON_GAP_IN * (n - 1)
+    chevron_width_in = (geom.width_in - total_gap_in) / n
+    top_in = geom.top_in + (geom.height_in - chevron_height_in) / 2
+    hex_color = (brand_colors or {}).get("blue_primary", DEFAULT_CHEVRON_HEX)
+
+    chevrons = []
+    for i, label in enumerate(steps):
+        left_in = geom.left_in + i * (chevron_width_in + CHEVRON_GAP_IN)
+        shp = slide.shapes.add_shape(
+            MSO_SHAPE.CHEVRON,
+            Inches(left_in), Inches(top_in),
+            Inches(chevron_width_in), Inches(chevron_height_in),
+        )
+        shp.fill.solid()
+        shp.fill.fore_color.rgb = RGBColor.from_string(hex_color)
+        shp.line.fill.background()  # flat, no outline
+        tf = shp.text_frame
+        tf.word_wrap = True
+        tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+        tf.text = label
+        p0 = tf.paragraphs[0]
+        p0.alignment = PP_ALIGN.CENTER
+        for run in p0.runs:
+            run.font.size = Pt(CHEVRON_FONT_PT)
+            run.font.color.rgb = RGBColor.from_string(CHEVRON_FONT_HEX)
+        chevrons.append(shp)
+
+    group = slide.shapes.add_group_shape(chevrons)
+    group.name = slot.shape_name  # keep the slot addressable as ONE shape (D3)
+    return group
+
+
+def fill_slot(slide, slot, value, image_source_path=None, chart_spec=None,
+              diagram_spec=None, brand_colors=None):
     """Returns True if the slot was actually filled, False if it was left as
     the seed's own placeholder content. Image slots with no source are
     skipped rather than raising: a slide that can't get a real exhibit must be
@@ -147,10 +208,11 @@ def fill_slot(slide, slot, value, image_source_path=None, chart_spec=None):
     caller (render_slide) surfaces which required slots were skipped so the CLI
     can flag them.
 
-    An image-typed exhibit slot can be filled two ways (5.8 point 5, D7): a
-    native `chart_spec` (preferred -- stays editable) takes precedence, else a
-    rendered `image_source_path` picture; with neither, the grey placeholder
-    rect is left in place.
+    An image-typed exhibit slot can be filled three ways (5.8 point 5, D7):
+    a native `chart_spec` (preferred -- stays editable) takes precedence,
+    then a native `diagram_spec` (chevron-flow, also editable, 5.7/M4), else
+    a rendered `image_source_path` picture; with none of them, the grey
+    placeholder rect is left in place.
     """
     shape = find_shape(slide, slot.shape_name)
     if shape is None:
@@ -182,6 +244,10 @@ def fill_slot(slide, slot, value, image_source_path=None, chart_spec=None):
             _add_native_chart(slide, slot, chart_spec)
             _remove_shape(shape)  # remove the grey placeholder rect, per fill_protocol
             return True
+        if diagram_spec is not None:
+            _add_native_diagram(slide, slot, diagram_spec, brand_colors=brand_colors)
+            _remove_shape(shape)  # remove the grey placeholder rect, per fill_protocol
+            return True
         if image_source_path is None:
             return False  # grey placeholder rect stays -- caller flags needs_review
         geom = slot.geometry_in
@@ -201,23 +267,27 @@ def fill_slot(slide, slot, value, image_source_path=None, chart_spec=None):
         raise RuntimeError(f"unknown slot type: {slot.type}")
 
 
-def render_slide(output_prs, seed_slide, layout, spec, image_paths=None, chart_specs=None):
+def render_slide(output_prs, seed_slide, layout, spec, image_paths=None, chart_specs=None,
+                 diagram_specs=None, brand_colors=None):
     """Duplicate `seed_slide` into `output_prs` and fill it per `layout`'s
     slots from `spec.slots` (D3: duplicate first; D13: fill only the
     duplicate, never the seed).
 
     Image-typed exhibit slots are filled from `chart_specs[shape_name]` (a
-    native chart, preferred) or `image_paths[shape_name]` (a picture); a slot
-    with neither is left as the grey placeholder.
+    native chart, preferred), `diagram_specs[shape_name]` (a native
+    chevron-flow diagram, 5.7/M4), or `image_paths[shape_name]` (a picture);
+    a slot with none of them is left as the grey placeholder. `brand_colors`
+    is the manifest's brand color dict, used to theme diagram shapes.
 
     Returns (new_slide, skipped_required_slots): the second element lists the
     shape_name of every *required* slot that was left unfilled (only possible
-    for image slots with no chart or picture source -- see fill_slot) so the
-    caller can flag the slide needs_review instead of shipping it silently
-    incomplete.
+    for image slots with no chart, diagram, or picture source -- see
+    fill_slot) so the caller can flag the slide needs_review instead of
+    shipping it silently incomplete.
     """
     image_paths = image_paths or {}
     chart_specs = chart_specs or {}
+    diagram_specs = diagram_specs or {}
     new_slide = duplicate_slide(output_prs, seed_slide)
     skipped_required = []
     for slot in layout.slots:
@@ -226,6 +296,8 @@ def render_slide(output_prs, seed_slide, layout, spec, image_paths=None, chart_s
                 new_slide, slot, None,
                 image_source_path=image_paths.get(slot.shape_name),
                 chart_spec=chart_specs.get(slot.shape_name),
+                diagram_spec=diagram_specs.get(slot.shape_name),
+                brand_colors=brand_colors,
             )
         else:
             filled = fill_slot(new_slide, slot, spec.slots.get(slot.shape_name))

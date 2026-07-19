@@ -16,6 +16,7 @@ from pptx.oxml.ns import qn
 from pptx.util import Inches, Pt
 
 from .models.chart import SUPPORTED_CHART_TYPES
+from .qa_checker import check_overflow
 
 IMAGE_RT = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
 
@@ -170,7 +171,12 @@ def _add_native_diagram(slide, slot, diagram_data, brand_colors=None):
     total_gap_in = CHEVRON_GAP_IN * (n - 1)
     chevron_width_in = (geom.width_in - total_gap_in) / n
     top_in = geom.top_in + (geom.height_in - chevron_height_in) / 2
-    hex_color = (brand_colors or {}).get("blue_primary", DEFAULT_CHEVRON_HEX)
+    # "primary" is the one tenant-agnostic color key every manifest's brand.colors
+    # is expected to define for generated visual elements like this -- looking up
+    # a semantically-named key (e.g. the reference tenant's own "blue_primary")
+    # would silently fall back to DEFAULT_CHEVRON_HEX for any other tenant whose
+    # palette doesn't happen to use that exact name (caught by M7's second tenant).
+    hex_color = (brand_colors or {}).get("primary", DEFAULT_CHEVRON_HEX)
 
     chevrons = []
     for i, label in enumerate(steps):
@@ -199,14 +205,33 @@ def _add_native_diagram(slide, slot, diagram_data, brand_colors=None):
     return group
 
 
+def _run_font_size_pt(text_frame):
+    """Best-effort read of the first run's font size (points), for the QA
+    overflow estimate (5.9/M5). None if the shape has no run or the size
+    isn't explicitly set on it (inherited from master/theme) -- in that case
+    the overflow check is skipped rather than guessing a size (D9)."""
+    paragraphs = text_frame.paragraphs
+    if not paragraphs or not paragraphs[0].runs:
+        return None
+    size = paragraphs[0].runs[0].font.size
+    return size.pt if size is not None else None
+
+
 def fill_slot(slide, slot, value, image_source_path=None, chart_spec=None,
-              diagram_spec=None, brand_colors=None):
-    """Returns True if the slot was actually filled, False if it was left as
-    the seed's own placeholder content. Image slots with no source are
-    skipped rather than raising: a slide that can't get a real exhibit must be
-    flagged (needs_review), never silently broken or crashed on (D9) -- the
-    caller (render_slide) surfaces which required slots were skipped so the CLI
-    can flag them.
+              diagram_spec=None, brand_colors=None, layout=None, slide_height_in=None):
+    """Returns (filled, overflow_reason): `filled` is True if the slot was
+    actually filled, False if it was left as the seed's own placeholder
+    content. Image slots with no source are skipped rather than raising: a
+    slide that can't get a real exhibit must be flagged (needs_review), never
+    silently broken or crashed on (D9) -- the caller (render_slide) surfaces
+    which required slots were skipped so the CLI can flag them.
+
+    `overflow_reason` is the QA/Overflow Checker's (5.9/M5) verdict for
+    text/bullets slots -- None unless the estimated text height exceeds the
+    slot's safe growth budget (see qa_checker.py). Only computed when both
+    `layout` and `slide_height_in` are supplied (opt-in, so existing callers
+    that don't care about overflow are unaffected); always None for image
+    slots, which have no analogous check.
 
     An image-typed exhibit slot can be filled three ways (5.8 point 5, D7):
     a native `chart_spec` (preferred -- stays editable) takes precedence,
@@ -220,14 +245,18 @@ def fill_slot(slide, slot, value, image_source_path=None, chart_spec=None,
 
     if slot.type == "text":
         if value is None:
-            return False
+            return False, None
         text = value if not slot.max_chars or len(value) <= slot.max_chars else value[: slot.max_chars - 1].rstrip() + "…"
         _set_text_preserving_format(shape.text_frame, text)
-        return True
+        overflow_reason = None
+        if layout is not None and slide_height_in is not None:
+            font_size_pt = _run_font_size_pt(shape.text_frame)
+            overflow_reason = check_overflow(text, font_size_pt, slot, layout, slide_height_in)
+        return True, overflow_reason
 
     elif slot.type == "bullets":
         if not value:
-            return False
+            return False, None
         items = list(value)
         if slot.max_items:
             items = items[: slot.max_items]
@@ -237,19 +266,23 @@ def fill_slot(slide, slot, value, image_source_path=None, chart_spec=None,
                 for i in items
             ]
         _set_bullets_preserving_format(shape.text_frame, items)
-        return True
+        overflow_reason = None
+        if layout is not None and slide_height_in is not None:
+            font_size_pt = _run_font_size_pt(shape.text_frame)
+            overflow_reason = check_overflow(items, font_size_pt, slot, layout, slide_height_in)
+        return True, overflow_reason
 
     elif slot.type == "image":
         if chart_spec is not None:
             _add_native_chart(slide, slot, chart_spec)
             _remove_shape(shape)  # remove the grey placeholder rect, per fill_protocol
-            return True
+            return True, None
         if diagram_spec is not None:
             _add_native_diagram(slide, slot, diagram_spec, brand_colors=brand_colors)
             _remove_shape(shape)  # remove the grey placeholder rect, per fill_protocol
-            return True
+            return True, None
         if image_source_path is None:
-            return False  # grey placeholder rect stays -- caller flags needs_review
+            return False, None  # grey placeholder rect stays -- caller flags needs_review
         geom = slot.geometry_in
         picture = slide.shapes.add_picture(
             str(image_source_path),
@@ -261,14 +294,14 @@ def fill_slot(slide, slot, value, image_source_path=None, chart_spec=None,
         # resolves this slot on a future lookup (spike S1 finding).
         picture.name = slot.shape_name
         _remove_shape(shape)  # remove the grey placeholder rect, per fill_protocol
-        return True
+        return True, None
 
     else:
         raise RuntimeError(f"unknown slot type: {slot.type}")
 
 
 def render_slide(output_prs, seed_slide, layout, spec, image_paths=None, chart_specs=None,
-                 diagram_specs=None, brand_colors=None):
+                 diagram_specs=None, brand_colors=None, slide_height_in=None):
     """Duplicate `seed_slide` into `output_prs` and fill it per `layout`'s
     slots from `spec.slots` (D3: duplicate first; D13: fill only the
     duplicate, never the seed).
@@ -278,21 +311,27 @@ def render_slide(output_prs, seed_slide, layout, spec, image_paths=None, chart_s
     chevron-flow diagram, 5.7/M4), or `image_paths[shape_name]` (a picture);
     a slot with none of them is left as the grey placeholder. `brand_colors`
     is the manifest's brand color dict, used to theme diagram shapes.
+    `slide_height_in` (the manifest's slide_dimensions_in height) enables the
+    QA/Overflow Checker (5.9/M5) for text/bullets slots; omit it to skip that
+    check entirely (e.g. tests that don't care about overflow).
 
-    Returns (new_slide, skipped_required_slots): the second element lists the
-    shape_name of every *required* slot that was left unfilled (only possible
-    for image slots with no chart, diagram, or picture source -- see
-    fill_slot) so the caller can flag the slide needs_review instead of
-    shipping it silently incomplete.
+    Returns (new_slide, skipped_required_slots, overflow_warnings):
+    `skipped_required_slots` lists the shape_name of every *required* slot
+    left unfilled (only possible for image slots with no chart, diagram, or
+    picture source -- see fill_slot); `overflow_warnings` lists
+    (shape_name, reason) for text/bullets slots whose estimated height
+    exceeds their safe growth budget. Both let the caller flag the slide
+    needs_review instead of shipping it silently incomplete or broken (D9).
     """
     image_paths = image_paths or {}
     chart_specs = chart_specs or {}
     diagram_specs = diagram_specs or {}
     new_slide = duplicate_slide(output_prs, seed_slide)
     skipped_required = []
+    overflow_warnings = []
     for slot in layout.slots:
         if slot.type == "image":
-            filled = fill_slot(
+            filled, _ = fill_slot(
                 new_slide, slot, None,
                 image_source_path=image_paths.get(slot.shape_name),
                 chart_spec=chart_specs.get(slot.shape_name),
@@ -300,10 +339,42 @@ def render_slide(output_prs, seed_slide, layout, spec, image_paths=None, chart_s
                 brand_colors=brand_colors,
             )
         else:
-            filled = fill_slot(new_slide, slot, spec.slots.get(slot.shape_name))
+            filled, overflow_reason = fill_slot(
+                new_slide, slot, spec.slots.get(slot.shape_name),
+                layout=layout, slide_height_in=slide_height_in,
+            )
+            if overflow_reason:
+                overflow_warnings.append((slot.shape_name, overflow_reason))
         if not filled and slot.required:
             skipped_required.append(slot.shape_name)
-    return new_slide, skipped_required
+    return new_slide, skipped_required, overflow_warnings
+
+
+def replace_rendered_slide(output_prs, position, seed_slide, layout, spec, **render_kwargs):
+    """Re-render the slide currently at `position` in output_prs.slides (M6,
+    5.10): re-duplicate the *pristine* seed slide fresh and fill it per the
+    updated spec -- the exact same fill path as initial generation (D10/D11)
+    -- never re-clone the already-rendered output slide (D13). The fresh
+    slide is then swapped into `position` so slide order is preserved (FR-1)
+    and the stale slide is discarded; every other slide is untouched (FR-6).
+
+    `render_kwargs` passes through to render_slide unchanged (e.g.
+    chart_specs/diagram_specs/brand_colors/slide_height_in) so a text-only
+    revision doesn't lose that slide's existing chart/diagram.
+
+    Returns (new_slide, skipped_required, overflow_warnings), the same
+    contract as render_slide.
+    """
+    id_lst = output_prs.slides._sldIdLst
+    old_sld_id = list(id_lst)[position]
+
+    new_slide, skipped, overflow = render_slide(output_prs, seed_slide, layout, spec, **render_kwargs)
+
+    new_sld_id = list(id_lst)[-1]  # render_slide always appends at the end
+    id_lst.remove(new_sld_id)
+    id_lst.insert(position, new_sld_id)
+    id_lst.remove(old_sld_id)
+    return new_slide, skipped, overflow
 
 
 def strip_seed_slides(prs, count):

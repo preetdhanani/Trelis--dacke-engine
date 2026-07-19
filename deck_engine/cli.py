@@ -47,6 +47,8 @@ printed rather than silently shipping a real-looking but fake contact block.
 """
 import argparse
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -58,8 +60,10 @@ from .diagram_builder import build_diagram_data
 from .layout_selector import select_layout
 from .llm_providers import DEFAULT_MODEL, PROVIDERS, check_provider_ready, ProviderError
 from .models.chart import ChartData
+from .models.revision import RevisionState
 from .models.slide_spec import SlideSpec
-from .renderer import render_slide, strip_seed_slides
+from .renderer import render_slide, replace_rendered_slide, strip_seed_slides
+from .revision_engine import revise
 from .template_registry import load_tenant_assets, ManifestValidationError
 
 TITLE_LAYOUT_ID = "title"
@@ -100,6 +104,15 @@ def build_arg_parser():
         help="JSON file: a list of diagram-data blocks {steps: [str, ...]} (2-6 linear steps each), mapped in "
         "planner order to slides the Planner marked needs_exhibit=diagram. Rendered as a native, editable "
         "chevron-flow diagram (5.7/M4). Diagram steps are never fabricated (D9).",
+    )
+    p.add_argument(
+        "--interactive-revise",
+        action="store_true",
+        help="After the deck is generated, offer an interactive loop (5.10, M6) to flag any single "
+        "text slide with free-text feedback and see it revised in place -- a small ask ('change 12%% "
+        "to 15%%') edits just that value; a structural ask ('re-approach this slide') triggers a full "
+        "regeneration. Capped at 3 failed attempts per slide, then it's flagged for a human look. "
+        "The closing slide is excluded (its contact info is never LLM-generated/revised).",
     )
     p.add_argument("--out", type=Path, required=True)
     return p
@@ -146,6 +159,124 @@ def _normalize_contact(raw: str) -> str:
     if "\n" not in text and "|" in text:
         text = "\n".join(part.strip() for part in text.split("|"))
     return text
+
+
+def _print_overflow_flags(slide_label, layout_id, overflow_warnings):
+    """QA/Overflow Checker (5.9, M5): print a needs_review flag for every
+    text/bullets slot whose estimated height exceeds its safe growth budget.
+    Mirrors the existing skipped-required-slot flagging below -- never a
+    silent broken slide (D9)."""
+    for shape_name, reason in overflow_warnings:
+        print(
+            f"  FLAGGED (needs_review) {slide_label} ({layout_id}): slot '{shape_name}' {reason}",
+            file=sys.stderr,
+        )
+
+
+def _print_render_flags(label, layout_id, skipped, overflow, needs_exhibit=None):
+    """Shared FLAGGED-printer for both the initial render loop and the
+    revision loop (5.10, M6) -- same messages either way."""
+    for shape_name in skipped:
+        if needs_exhibit == "chart":
+            reason = "needs a chart but no --chart-data block was provided for it"
+        elif needs_exhibit == "diagram":
+            reason = "needs a diagram but no --diagram-data block was provided for it"
+        else:
+            reason = "has no exhibit source available"
+        print(
+            f"  FLAGGED (needs_review) {label} ({layout_id}): required slot '{shape_name}' {reason} "
+            "-- placeholder left in place",
+            file=sys.stderr,
+        )
+    _print_overflow_flags(label, layout_id, overflow)
+
+
+def _open_in_default_app(path):
+    """Best-effort cross-platform "open this file" -- lets the user actually
+    look at the deck mid-revision (5.10/M6) instead of judging it from a text
+    label alone. Never fatal: if it fails, the caller still has the saved
+    path to open by hand."""
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(path))  # noqa: only defined on Windows
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(path)], check=False)
+        return True
+    except OSError:
+        return False
+
+
+def _format_slide_summary(spec, indent="     "):
+    """Render a slide's current slot values as readable terminal lines --
+    the closest thing to "seeing the slide" without opening PowerPoint (5.10/
+    M6): feedback like "change 12% to 15%" is hard to give blind."""
+    lines = []
+    for shape_name, value in spec.slots.items():
+        if value is None or value == "" or value == []:
+            continue
+        text = ", ".join(value) if isinstance(value, list) else str(value)
+        if len(text) > 90:
+            text = text[:87] + "..."
+        lines.append(f"{indent}{shape_name}: {text!r}")
+    return "\n".join(lines) if lines else f"{indent}(no text content in this exhibit/placeholder slide)"
+
+
+def _run_interactive_revision(output_prs, revisable, provider, model, deck_context, out_path):
+    """5.10/M6: let the user flag any single revisable slide with free-text
+    feedback and see it revised in place, looping until they're done. Every
+    other slide is untouched (FR-6); regeneration always re-duplicates the
+    pristine seed fresh (D13) via replace_rendered_slide.
+
+    Charts/diagrams don't have a meaningful text summary, so 'p'/'preview'
+    saves the deck-so-far to `out_path` and opens it in the system's default
+    app -- the only way to actually *see* an exhibit slide before deciding
+    what feedback to give.
+    """
+    print("\n--- Interactive revision (M6) ---")
+    print("Each slide's current text is shown below its number. Flag one to revise it,")
+    print("type 'p' to save + open the deck so far in PowerPoint, or Enter to finish.\n")
+    while True:
+        for i, r in enumerate(revisable, 1):
+            flag = " [ESCALATED -- needs a human look]" if r["state"].escalated else ""
+            print(f"  {i}. {r['label']}{flag}")
+            print(_format_slide_summary(r["state"].current_spec))
+        choice = input("\nSlide number to revise, 'p' to preview, or Enter to finish: ").strip()
+        if not choice:
+            break
+        if choice.lower() in ("p", "preview"):
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            output_prs.save(str(out_path))
+            print(f"  saved current state to {out_path} -- opening it now...")
+            if not _open_in_default_app(out_path):
+                print(f"  couldn't auto-open it -- open {out_path} manually to take a look.")
+            continue
+        try:
+            entry = revisable[int(choice) - 1]
+        except (ValueError, IndexError):
+            print("  not a valid slide number.")
+            continue
+        if entry["state"].escalated:
+            print("  this slide already hit the 3-failed-attempt cap -- pick another slide.")
+            continue
+        feedback = input(f"  Feedback for {entry['label']}: ").strip()
+        if not feedback:
+            continue
+
+        entry["state"] = revise(entry["state"], feedback, provider, model, deck_context=deck_context)
+        if entry["state"].last_error is not None:
+            print(f"  revision did not produce a usable slide ({entry['state'].last_error}); slide left unchanged.")
+            if entry["state"].escalated:
+                print("  ESCALATED: 3 failed attempts on this slide -- stopping automatic revision here.")
+            continue
+
+        _, skipped, overflow = replace_rendered_slide(
+            output_prs, entry["position"], entry["seed"], entry["layout"], entry["state"].current_spec,
+            **entry["render_kwargs"],
+        )
+        _print_render_flags(entry["label"], entry["layout"].layout_id, skipped, overflow, entry.get("needs_exhibit"))
+        print(f"  revised and re-rendered {entry['label']}.")
 
 
 def _content_brief(intent) -> str:
@@ -313,11 +444,21 @@ def main(argv=None):
     # invented). Only fill it if the caller actually gave us something real;
     # otherwise leave the slot unset so the renderer keeps the seed's own
     # placeholder text rather than fabricate a person's details.
+    #
+    # The contact slot's shape_name is resolved from the manifest by its
+    # `role` (a tenant-agnostic contract every closing_contact layout shares),
+    # never hardcoded to the reference tenant's own shape name (M7 caught this
+    # as a real bug: a second tenant's differently-named slot silently never
+    # got filled, because the previous code hardcoded "IM_CLOSING_CONTACT").
+    contact_slot = next((s for s in closing_layout.non_image_slots() if s.role == "contact_block"), None)
+    if contact_slot is None:
+        print(f"error: closing_contact layout has no slot with role='contact_block'", file=sys.stderr)
+        return 1
     if args.contact:
         closing_spec = SlideSpec(
             layout_id=CLOSING_LAYOUT_ID,
             content_kind="text",
-            slots={"IM_CLOSING_CONTACT": _normalize_contact(args.contact)},
+            slots={contact_slot.shape_name: _normalize_contact(args.contact)},
         )
     else:
         closing_spec = SlideSpec(layout_id=CLOSING_LAYOUT_ID, content_kind="text", slots={})
@@ -333,36 +474,62 @@ def main(argv=None):
     print(f"[4/4] rendering {total_slides} slide(s) via seed-slide duplication...")
     output_prs = assets.open_template()
     n_seed_slides = len(output_prs.slides)
+    slide_height_in = manifest.slide_dimensions_in["height"]
+
+    # revisable (5.10, M6): one entry per LLM-generated slide, in output_prs
+    # append order, so each entry's position is known up front. The closing
+    # slide is deliberately excluded -- its contact info is caller-supplied,
+    # never LLM-generated, and must never become something revise() regenerates.
+    revisable = []
 
     if title_spec:
         title_seed = output_prs.slides[title_layout.slide_index]
-        render_slide(output_prs, title_seed, title_layout, title_spec)
+        _, skipped, title_overflow = render_slide(
+            output_prs, title_seed, title_layout, title_spec, slide_height_in=slide_height_in
+        )
+        _print_render_flags("title slide", title_layout.layout_id, skipped, title_overflow)
+        revisable.append({
+            "label": "title slide", "position": n_seed_slides + len(revisable), "seed": title_seed, "layout": title_layout,
+            "needs_exhibit": None, "render_kwargs": {"slide_height_in": slide_height_in},
+            "state": RevisionState(label="title slide", layout=title_layout, role="opening/title slide",
+                                   content_brief=brief, current_spec=title_spec),
+        })
 
     for idx, (layout, spec, intent) in enumerate(content_slides):
         seed = output_prs.slides[layout.slide_index]  # always the pristine seed at its fixed index (D13)
-        _, skipped = render_slide(
-            output_prs, seed, layout, spec,
-            chart_specs=chart_specs_per_slide.get(idx),
-            diagram_specs=diagram_specs_per_slide.get(idx),
-            brand_colors=manifest.brand.get("colors", {}),
-        )
-        for shape_name in skipped:
-            if intent.needs_exhibit == "chart":
-                reason = "needs a chart but no --chart-data block was provided for it"
-            elif intent.needs_exhibit == "diagram":
-                reason = "needs a diagram but no --diagram-data block was provided for it"
-            else:
-                reason = "has no exhibit source available"
-            print(
-                f"  FLAGGED (needs_review) slide {idx + 1} ({layout.layout_id}): "
-                f"required slot '{shape_name}' {reason} -- placeholder left in place",
-                file=sys.stderr,
-            )
+        render_kwargs = {
+            "chart_specs": chart_specs_per_slide.get(idx),
+            "diagram_specs": diagram_specs_per_slide.get(idx),
+            "brand_colors": manifest.brand.get("colors", {}),
+            "slide_height_in": slide_height_in,
+        }
+        _, skipped, overflow = render_slide(output_prs, seed, layout, spec, **render_kwargs)
+        label = f"slide {idx + 1}"
+        _print_render_flags(label, layout.layout_id, skipped, overflow, intent.needs_exhibit)
+        revisable.append({
+            "label": f"{label} ({layout.layout_id})", "position": n_seed_slides + len(revisable), "seed": seed, "layout": layout,
+            "needs_exhibit": intent.needs_exhibit, "render_kwargs": render_kwargs,
+            "state": RevisionState(label=label, layout=layout, role=f"content slide ({intent.purpose})",
+                                   content_brief=_content_brief(intent), current_spec=spec),
+        })
 
     closing_seed = output_prs.slides[closing_layout.slide_index]
-    render_slide(output_prs, closing_seed, closing_layout, closing_spec)
+    _, closing_skipped, closing_overflow = render_slide(
+        output_prs, closing_seed, closing_layout, closing_spec, slide_height_in=slide_height_in
+    )
+    _print_render_flags("closing slide", closing_layout.layout_id, closing_skipped, closing_overflow)
 
+    # Strip the pristine seed slides *before* the revision loop (not just at
+    # the end): captured `seed` Slide object references stay valid and
+    # reusable for further duplication after this (verified) -- doing it here
+    # means the deck is already in its final, save-able shape, so the
+    # revision loop can preview/save it at any point, not just once at exit.
     strip_seed_slides(output_prs, n_seed_slides)
+    for entry in revisable:
+        entry["position"] -= n_seed_slides  # every slide's index shifted down once the seeds were removed
+
+    if args.interactive_revise:
+        _run_interactive_revision(output_prs, revisable, args.provider, model, deck_context=brief, out_path=args.out)
 
     print(f"saving to {args.out}...")
     args.out.parent.mkdir(parents=True, exist_ok=True)

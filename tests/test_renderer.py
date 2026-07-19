@@ -5,8 +5,9 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from deck_engine.chart_builder import build_chart_spec
 from deck_engine.diagram_builder import build_diagram_data
 from deck_engine.models.chart import ChartData
+from deck_engine.models.manifest import GeometryIn, Layout, Slot
 from deck_engine.models.slide_spec import SlideSpec
-from deck_engine.renderer import find_shape, render_slide, strip_seed_slides
+from deck_engine.renderer import fill_slot, find_shape, render_slide, replace_rendered_slide, strip_seed_slides
 from deck_engine.template_registry import load_tenant_assets
 
 
@@ -29,7 +30,7 @@ class TestRenderer(unittest.TestCase):
                 "IM_BULLETS_BODY": ["first point", "second point", "third point"],
             },
         )
-        new_slide, skipped = render_slide(prs, seed_slide, self.layout, spec)
+        new_slide, skipped, _ = render_slide(prs, seed_slide, self.layout, spec)
 
         self.assertEqual(skipped, [])
         self.assertEqual(find_shape(new_slide, "IM_BULLETS_TITLE").text_frame.text, "Test Title")
@@ -50,7 +51,7 @@ class TestRenderer(unittest.TestCase):
         prs = self.assets.open_template()
         seed_slide = prs.slides[self.layout.slide_index]
         spec = SlideSpec(layout_id="text_bullets", slots={"IM_BULLETS_TITLE": "Font Check", "IM_BULLETS_BODY": ["a"]})
-        new_slide, _ = render_slide(prs, seed_slide, self.layout, spec)
+        new_slide, _, _ = render_slide(prs, seed_slide, self.layout, spec)
 
         run = find_shape(new_slide, "IM_BULLETS_TITLE").text_frame.paragraphs[0].runs[0]
         self.assertEqual(run.font.name, "Cambria")
@@ -95,7 +96,7 @@ class TestRenderer(unittest.TestCase):
             layout_id="two_column",
             slots={"IM_TWOCOL_TITLE": "No Image Available", "IM_TWOCOL_BODY": ["a", "b"]},
         )
-        new_slide, skipped = render_slide(prs, seed_slide, two_column, spec)  # no image_paths given
+        new_slide, skipped, _ = render_slide(prs, seed_slide, two_column, spec)  # no image_paths given
 
         self.assertEqual(skipped, ["IM_TWOCOL_IMAGE"])
         # the grey placeholder shape is still there, still named as the manifest expects
@@ -118,7 +119,7 @@ class TestRenderer(unittest.TestCase):
             content_kind="chart",
             slots={"IM_EXHIBIT_TITLE": "Growth", "IM_EXHIBIT_TAKEAWAY": "Up and to the right."},
         )
-        new_slide, skipped = render_slide(
+        new_slide, skipped, _ = render_slide(
             prs, seed_slide, exhibit, spec, chart_specs={img_slot.shape_name: chart_spec}
         )
 
@@ -142,7 +143,7 @@ class TestRenderer(unittest.TestCase):
             content_kind="chart",
             slots={"IM_EXHIBIT_TITLE": "T", "IM_EXHIBIT_TAKEAWAY": "point"},  # fill the required text slots
         )
-        new_slide, skipped = render_slide(
+        new_slide, skipped, _ = render_slide(
             prs, seed_slide, exhibit, spec,
             image_paths={img_slot.shape_name: "does_not_exist.png"},  # would fail if the picture path were used
             chart_specs={img_slot.shape_name: chart_spec},
@@ -163,7 +164,7 @@ class TestRenderer(unittest.TestCase):
         labels = ["Intake", "Review", "Approve", "Deliver"]
         diagram_data = build_diagram_data(labels)
         spec = SlideSpec(layout_id="image_only", content_kind="diagram", slots={})
-        new_slide, skipped = render_slide(
+        new_slide, skipped, _ = render_slide(
             prs, seed_slide, image_only, spec, diagram_specs={img_slot.shape_name: diagram_data}
         )
 
@@ -184,7 +185,7 @@ class TestRenderer(unittest.TestCase):
 
         diagram_data = build_diagram_data(["One", "Two"])
         spec = SlideSpec(layout_id="image_only", content_kind="diagram", slots={})
-        new_slide, skipped = render_slide(
+        new_slide, skipped, _ = render_slide(
             prs, seed_slide, image_only, spec,
             image_paths={img_slot.shape_name: "does_not_exist.png"},  # would fail if the picture path were used
             diagram_specs={img_slot.shape_name: diagram_data},
@@ -208,7 +209,7 @@ class TestRenderer(unittest.TestCase):
             content_kind="chart",
             slots={"IM_EXHIBIT_TITLE": "T", "IM_EXHIBIT_TAKEAWAY": "point"},
         )
-        new_slide, skipped = render_slide(
+        new_slide, skipped, _ = render_slide(
             prs, seed_slide, exhibit, spec,
             chart_specs={img_slot.shape_name: chart_spec},
             diagram_specs={img_slot.shape_name: diagram_data},
@@ -216,6 +217,82 @@ class TestRenderer(unittest.TestCase):
         self.assertEqual(skipped, [])
         self.assertEqual(len([s for s in new_slide.shapes if s.has_chart]), 1)
         self.assertEqual(len([s for s in new_slide.shapes if s.shape_type == MSO_SHAPE_TYPE.GROUP]), 0)
+
+    def test_fill_slot_flags_overflow_for_a_tiny_box_with_long_text(self):
+        """M5: fill_slot runs the QA/Overflow Checker (5.9) on text/bullets
+        slots when given layout+slide_height_in. A real shape/font from the
+        template, deliberately given a tiny synthetic geometry (no other
+        slots in this layout, so headroom falls back to the slide's bottom
+        margin) and a long value, must be flagged -- never silently accepted."""
+        prs = self.assets.open_template()
+        seed_slide = prs.slides[self.layout.slide_index]
+        tiny_slot = Slot(
+            shape_name="IM_BULLETS_TITLE", type="text", role="title",
+            geometry_in=GeometryIn(left_in=1.0, top_in=1.0, width_in=1.0, height_in=0.1),
+        )
+        tiny_layout = Layout(layout_id="tiny", slide_index=self.layout.slide_index, title="tiny", use_when="x", slots=[tiny_slot])
+        long_text = "This is a long line of text that will not fit inside a one inch wide, tenth-of-an-inch tall box."
+
+        filled, overflow_reason = fill_slot(seed_slide, tiny_slot, long_text, layout=tiny_layout, slide_height_in=7.5)
+
+        self.assertTrue(filled)
+        self.assertIsNotNone(overflow_reason)
+        self.assertIn("overflow", overflow_reason)
+
+    def test_fill_slot_skips_overflow_check_when_not_opted_in(self):
+        """Backward compatibility: omitting layout/slide_height_in (the
+        default) skips the overflow check entirely -- existing callers that
+        don't care about it are unaffected."""
+        prs = self.assets.open_template()
+        seed_slide = prs.slides[self.layout.slide_index]
+        tiny_slot = Slot(
+            shape_name="IM_BULLETS_TITLE", type="text", role="title",
+            geometry_in=GeometryIn(left_in=1.0, top_in=1.0, width_in=1.0, height_in=0.1),
+        )
+        long_text = "This is a long line of text that will not fit inside a one inch wide, tenth-of-an-inch tall box."
+
+        filled, overflow_reason = fill_slot(seed_slide, tiny_slot, long_text)  # no layout/slide_height_in
+
+        self.assertTrue(filled)
+        self.assertIsNone(overflow_reason)
+
+    def test_render_slide_reports_no_overflow_for_normal_short_content(self):
+        """Regression guard: ordinary, well within-limits content on the real
+        manifest's own layout/geometry must not spuriously flag overflow."""
+        prs = self.assets.open_template()
+        seed_slide = prs.slides[self.layout.slide_index]
+        spec = SlideSpec(
+            layout_id="text_bullets",
+            slots={
+                "IM_BULLETS_TITLE": "Test Title",
+                "IM_BULLETS_KICKER": "Test Kicker",
+                "IM_BULLETS_BODY": ["first point", "second point", "third point"],
+            },
+        )
+        _, _, overflow = render_slide(prs, seed_slide, self.layout, spec, slide_height_in=7.5)
+        self.assertEqual(overflow, [])
+
+    def test_replace_rendered_slide_preserves_order_and_discards_the_stale_slide(self):
+        """M6/5.10: revising one slide must not disturb any other slide's
+        order or content (FR-6), and must re-duplicate the pristine seed
+        fresh rather than mutate the already-rendered slide (D13)."""
+        prs = self.assets.open_template()
+        n_seed = len(prs.slides)
+        seed_slide = prs.slides[self.layout.slide_index]
+
+        titles = ["Slide 0", "Slide 1", "Slide 2"]
+        for t in titles:
+            render_slide(prs, seed_slide, self.layout, SlideSpec(layout_id="text_bullets", slots={"IM_BULLETS_TITLE": t, "IM_BULLETS_BODY": ["a"]}))
+
+        revised_spec = SlideSpec(layout_id="text_bullets", slots={"IM_BULLETS_TITLE": "Slide 1 REVISED", "IM_BULLETS_BODY": ["a"]})
+        position = n_seed + 1  # "Slide 1"'s position among the rendered slides
+        new_slide, skipped, _ = replace_rendered_slide(prs, position, seed_slide, self.layout, revised_spec)
+
+        self.assertEqual(skipped, [])
+        rendered_titles = [find_shape(prs.slides[n_seed + i], "IM_BULLETS_TITLE").text_frame.text for i in range(3)]
+        self.assertEqual(rendered_titles, ["Slide 0", "Slide 1 REVISED", "Slide 2"])
+        self.assertEqual(len(prs.slides), n_seed + 3)  # no extra slide left behind
+        self.assertEqual(prs.slides[n_seed + 1], new_slide)  # the slide at that position IS the new one
 
 
 if __name__ == "__main__":

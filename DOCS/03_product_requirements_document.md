@@ -102,14 +102,17 @@ The system builds a process/flow diagram from plain text (user does **not** writ
 **FR-6 — Per-slide flag & feedback**
 The user can flag any single slide and attach free-text feedback without affecting other slides.
 *Accept:* only the flagged slide changes; all others remain byte-stable/locked.
+*Status (M6, SDD v1.8):* **met.** `--interactive-revise` flags any single LLM-generated slide by number; `renderer.replace_rendered_slide` swaps in the revised slide at its existing position and every other slide is untouched (verified: byte-identical before/after in the saved file). The closing slide is deliberately excluded — its contact info is caller-supplied, never something revision can regenerate.
 
 **FR-7 — Field-edit vs. regeneration routing**
 Feedback is classified: small asks → surgical field edit; structural asks → full-slide regeneration.
 *Accept:* "change 12% to 15%" edits only that value and changes nothing else; "re-approach this slide" regenerates it; the regen prompt includes prior rejected attempts and deck context.
+*Status (M6, SDD v1.8):* **met, narrowed for text slots.** Classification is automatic (D6-style structured output); a field edit changes exactly one slot's value, verified byte-identical elsewhere. Field-edit v1 only targets **text**-type slots — a bullets-list ask is a structural decision (which item, how many), not a value fill-in, so it's routed to regen instead, automatically, with no user-visible failure. Regen prompt includes the capped/summarized feedback log and deck context, though "deck context" is a simplified stand-in (a caller-supplied string) rather than a persisted narrative object (5.12 persistence is a separate, unbuilt milestone).
 
 **FR-8 — Structural style consistency on regeneration**
 A regenerated slide is always consistent with the deck's brand (colors/fonts/layout).
 *Accept:* regeneration reuses the same layout-fill path as generation; no regenerated slide is ever off-brand (guaranteed by template inheritance, not by prompting).
+*Status (M6, SDD v1.8):* **met by construction.** Regeneration calls `content_generator.generate_single_slide` directly — the exact function initial generation uses — and re-rendering re-duplicates the pristine seed slide fresh (D13); there is no separate "regenerated slide" code path that could drift out of brand alignment.
 
 **FR-9 — Editable native export**
 Output is a single native `.pptx` a consultant can finesse.
@@ -118,14 +121,17 @@ Output is a single native `.pptx` a consultant can finesse.
 **FR-10 — Needs-review flagging**
 Overflowing or failed slides are surfaced, never silently shipped.
 *Accept:* overflow is detected (≥ 95% of cases) and marked `needs_review`; slides failing after retry are marked `failed`/`needs_review`; nothing broken ships un-flagged.
+*Status (M5, SDD v1.7):* **met, with a caveat worth naming.** Overflow is now detected via a heuristic (line-wrap estimate + safe growth budget vs. the nearest neighboring shape) rather than a pixel-exact render — `python-pptx` has no text-layout engine, and no new dependency or platform-specific step (PowerPoint COM) was introduced to get one. The "≥ 95%" figure is not independently measured against ground truth (would require a real-PowerPoint reference render to score against); what's verified is that normal, within-limits content across the real manifest does not spuriously flag, and a deliberately excessive case does. Failed-after-retry flagging (chart/diagram/text generation failures) was already met from M2/M3/M4.
 
 **FR-11 — Template + manifest onboarding**
 A tenant is onboarded by registering a built-to-spec `.pptx` and its manifest (+ voice guide).
 *Accept:* the manifest is validated against the real `.pptx` at load (mismatch = fatal, pre-render); end users never author or see the manifest.
+*Status (M7, SDD v1.9):* **met** for onboarding mechanics — a second tenant ("meridian") was registered purely via a `config.py` entry + its own template/manifest files, with no engine code changes, and its manifest validates against its real `.pptx` at load exactly like the reference tenant's. **Voice guide is still not wired in** (tracked separately, see the "no tenant voice guide" limitation) — onboarding today covers template + manifest, not house-tone. `meridian`'s template was built programmatically (`tools/build_meridian_template.py`), not by a human in PowerPoint, since no design software exists in this build environment — a real onboarding still follows the manual process the manifest's authoring note describes.
 
 **FR-12 — Multi-tenant isolation**
 Each tenant's templates, content, and outputs are isolated.
 *Accept:* a second onboarded tenant renders on its own brand with no leakage of content or templates between tenants.
+*Status (M7, SDD v1.9):* **met, and caught two real bugs in the process.** Running both tenants in the same process produces zero shape-name overlap and fully consistent repeated output. Getting here surfaced two genuine cross-tenant leaks that a single-tenant test suite couldn't have caught: `_add_native_diagram` hardcoded a lookup of the reference tenant's own color key name (fixed via a new tenant-agnostic `"primary"` key every manifest now defines), and the closing slide's contact block was filled via a hardcoded reference-tenant shape name in `cli.py` (fixed by resolving that slot via its `role` instead). Both are now covered by regression tests.
 
 ---
 
@@ -146,20 +152,20 @@ Each tenant's templates, content, and outputs are isolated.
 
 v1 is done when **all** of the following hold:
 
-- [ ] Brief → editable `.pptx` on a built-to-spec template, unattended (FR-1).
-- [ ] Full ~6-layout set with deterministic manifest-driven selection (FR-2).
-- [ ] In-voice text within placeholder limits, ≥ 90% usable first draft (FR-3).
-- [ ] Native charts with suggestion + confirmation, supported subset only (FR-4).
-- [ ] One process/flow diagram type — editable native shapes, or image+flag if S5 deferred (FR-5).
-- [ ] Per-slide flag + field-edit/regen routing + capped feedback log + 3-attempt escalation (FR-6/7).
-- [ ] Regeneration structurally on-brand via shared fill path (FR-8).
-- [ ] Editable native `.pptx` export (FR-9).
-- [ ] Overflow/failure detection → `needs_review`, zero silent bad slides (FR-10).
-- [ ] Template + manifest onboarding with load-time validation (FR-11).
-- [ ] Second tenant onboarded, isolation proven (FR-12).
-- [ ] Dogfooded on a real deck.
+- [x] Brief → editable `.pptx` on a built-to-spec template, unattended (FR-1).
+- [x] Full ~6-layout set with deterministic manifest-driven selection (FR-2). *(Resolved at 8 layouts, not 6 — title/closing are fixed bookends; see SDD §6.3.)*
+- [x] In-voice text within placeholder limits, ≥ 90% usable first draft (FR-3). *(Spike S2: 100% schema-valid, 100% usable, N=20 against the reference provider.)*
+- [x] Native charts with suggestion + confirmation, supported subset only (FR-4).
+- [x] One process/flow diagram type — editable native shapes, or image+flag if S5 deferred (FR-5). *(Linear chevron-flow, native/editable; branching deferred to v2, see FR-5 status note.)*
+- [x] Per-slide flag + field-edit/regen routing + capped feedback log + 3-attempt escalation (FR-6/7).
+- [x] Regeneration structurally on-brand via shared fill path (FR-8).
+- [x] Editable native `.pptx` export (FR-9).
+- [x] Overflow/failure detection → `needs_review`, zero silent bad slides (FR-10). *(Heuristic estimate, not pixel-exact; see FR-10 status note.)*
+- [x] Template + manifest onboarding with load-time validation (FR-11).
+- [x] Second tenant onboarded, isolation proven (FR-12).
+- [x] Dogfooded on a real deck. *(Finance-transformation deck, generated repeatedly end-to-end against local Ollama and reviewed.)*
 
-Anything beyond this list is **out of v1** and belongs to the roadmap.
+**v1 is done.** Anything beyond this list is **out of v1** and belongs to the roadmap (§9) — most immediately, the tenant voice guide (tracked as a known limitation, not yet scheduled against a milestone) and the v2 items below.
 
 ---
 

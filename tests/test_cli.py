@@ -210,5 +210,54 @@ class TestCliDiagramMapping(unittest.TestCase):
         self.assertEqual(len(prs.slides), 4)
 
 
+class TestSecondTenantCli(unittest.TestCase):
+    """M7 (SDD v1.9): the exact same CLI, unmodified, generates a real deck
+    against the second tenant's own template/manifest/brand -- proving
+    tenant-agnosticism end-to-end (PRD FR-11/FR-12), not just that the
+    manifest loads."""
+
+    def setUp(self):
+        self.manifest = load_tenant_assets("meridian").manifest
+
+    def _intents(self):
+        return [
+            SlideIntent(purpose="Show the process", suggested_layout="image_only",
+                        headline="How it works", content_outline="the flow", needs_exhibit="diagram"),
+        ]
+
+    def _fake_generate(self, brief, layout, provider, model, role="opening slide"):
+        return SlideSpec(layout_id=layout.layout_id, content_kind="text", slots={}), None
+
+    def _fake_select(self, intent, manifest, provider, model):
+        return manifest.layout_by_id(intent.suggested_layout), None
+
+    def test_generates_a_valid_deck_with_meridians_own_brand_color_and_shape_names(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = Path(tmpdir) / "meridian_deck.pptx"
+            data_path = Path(tmpdir) / "steps.json"
+            data_path.write_text(json.dumps([{"steps": ["Discover", "Design", "Deliver"]}]), encoding="utf-8")
+            argv = [
+                "--tenant", "meridian",
+                "--brief", "mocked", "--contact", "Jane|Role|jane@x.com",
+                "--diagram-data", str(data_path),
+                "--out", str(out_path),
+            ]
+            with mock.patch("deck_engine.cli.check_provider_ready"), mock.patch(
+                "deck_engine.cli.generate_single_slide", side_effect=self._fake_generate
+            ), mock.patch(
+                "deck_engine.cli.plan_deck", return_value=(self._intents(), None)
+            ), mock.patch("deck_engine.cli.select_layout", side_effect=self._fake_select):
+                exit_code = cli.main(argv)
+            self.assertEqual(exit_code, 0)
+            prs = Presentation(str(out_path))
+
+        groups = [s for slide in prs.slides for s in slide.shapes if s.shape_type == MSO_SHAPE_TYPE.GROUP]
+        self.assertEqual(len(groups), 1)
+        chevron = groups[0].shapes[0]
+        self.assertEqual(str(chevron.fill.fore_color.rgb), self.manifest.brand["colors"]["teal_primary"])
+        all_shape_names = {s.name for slide in prs.slides for s in slide.shapes}
+        self.assertTrue(any(name.startswith("MP_") for name in all_shape_names))
+
+
 if __name__ == "__main__":
     unittest.main()

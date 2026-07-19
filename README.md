@@ -11,9 +11,9 @@ their named shapes, so the model never touches design — it only supplies text 
 data inside tight, template-defined limits. That division of labor is what keeps
 output good (see [Why the output stays good](#why-the-output-stays-good)).
 
-> **Status:** M0–M4 built and verified end-to-end (Anthropic, Gemini, and local
-> Ollama). QA/overflow, the revision engine, and multi-tenant
-> onboarding are on the roadmap — see [Status & roadmap](#status--roadmap).
+> **Status:** M0–M7 built and verified end-to-end (Anthropic, Gemini, and local
+> Ollama) — **v1 is feature-complete.** See [Status & roadmap](#status--roadmap)
+> for what's next (v2).
 > The full design rationale lives in
 > [DOCS/02_system_design_document.md](DOCS/02_system_design_document.md).
 
@@ -74,7 +74,8 @@ python -m deck_engine.cli --brief "..." --out output/deck.pptx
 | `--chart-type` | | — | Global chart-type override for blocks lacking their own `type` |
 | `--confirm-charts` | | off | Prompt to confirm/override each chart's type |
 | `--diagram-data` | | — | JSON file of diagram steps (see [Diagram data](#diagram-data)) |
-| `--tenant` | | `default` | Which template + manifest to use |
+| `--interactive-revise` | | off | After generation, interactively flag + revise slides (see [Revising a slide](#revising-a-slide---interactive-revise)) |
+| `--tenant` | | `default` | Which template + manifest to use (`default` or `meridian` — see [Multi-tenant](#multi-tenant)) |
 
 ### Examples
 
@@ -194,6 +195,62 @@ future agent) can decide where a flow splits.
 
 ---
 
+## Revising a slide (`--interactive-revise`)
+
+```bash
+python -m deck_engine.cli --brief "..." --interactive-revise --out output/deck.pptx
+```
+
+After the deck is generated (but before it's saved for good), you'll get a numbered
+list of every LLM-generated slide — **with its current text shown right there in
+the terminal** — and can flag one with free-text feedback:
+
+- **A small, targeted ask** ("change 12% to 15%", "fix the typo in the title") →
+  edits just that one value — everything else on the slide (and every other
+  slide) stays byte-identical.
+- **A structural ask** ("re-approach this slide", "make this punchier") → a full
+  regeneration through the exact same fill path as the original slide, so it's
+  guaranteed to stay on-brand.
+
+Which kind of edit it is gets classified automatically — you don't have to say.
+Charts/diagrams don't show as text, so type **`p`** at any point to save the deck
+as it currently stands and open it in PowerPoint (or your OS's default viewer) —
+useful before deciding what feedback an exhibit slide actually needs. Keep
+revising/previewing until you're happy, then press Enter to finish and save for
+real. A slide that fails 3 times in a row is flagged as escalated and skipped —
+that's a sign the ask needs a human, not another automatic retry. The **closing
+slide is excluded**: its contact details are yours, never LLM-generated or
+revised.
+
+---
+
+## Multi-tenant
+
+Branding lives entirely in the tenant's template + manifest — never in code. Two
+tenants ship today:
+
+- **`default`** — the reference "Master Deck" template used throughout this README.
+- **`meridian`** — a second, structurally independent tenant ("Meridian Partners")
+  that proves the engine is genuinely tenant-agnostic: its own template file, its
+  own manifest, its own shape-naming convention (`MP_...` instead of `IM_...`),
+  its own brand colors and fonts, even a completely different internal slide
+  ordering. Nothing about it is hardcoded anywhere in the engine.
+
+```bash
+python -m deck_engine.cli --tenant meridian --brief "..." --out output/deck.pptx
+```
+
+`meridian`'s template + manifest were generated programmatically (there's no
+design software in this build environment) via `tools/build_meridian_template.py`
+— a stand-in for the manual "build it in PowerPoint" onboarding step a real
+tenant would go through. See that script if you want to onboard a third tenant
+of your own: register a `template_path` + `manifest_path` pair in
+`deck_engine/config.py`, and everything else — planning, layout selection,
+content generation, charts, diagrams, overflow checking, revision — works
+unchanged.
+
+---
+
 ## Why the output stays good
 
 Quality comes from rails, not from one clever prompt:
@@ -238,9 +295,12 @@ deck_engine/
   chart_builder.py     5.6 data shape -> chart type -> native chart spec
   diagram_builder.py   5.7 ordered steps -> chevron-flow diagram data
   renderer.py          5.8 seed-slide duplication + fill + native charts/diagrams
+  qa_checker.py        5.9 text/bullets overflow estimate -> needs_review flag
+  revision_engine.py   5.10 feedback classify -> field-edit or regen, capped log
   llm_providers.py     provider dispatch (Anthropic / Ollama / Gemini)
   models/              Pydantic contracts: manifest, slide_intent, slide_spec, chart
-Templates/             the .pptx template + its JSON manifest
+Templates/             both tenants' .pptx templates + their JSON manifests
+tools/                 one-time template-authoring scripts (e.g. build_meridian_template.py)
 tests/                 stdlib unittest suite
 DOCS/                  design docs (spike plan, SDD, PRD)
 ```
@@ -253,7 +313,7 @@ DOCS/                  design docs (spike plan, SDD, PRD)
 python -m unittest discover -s tests
 ```
 
-80 tests, no external services required (all LLM/network calls are mocked).
+120 tests, no external services required (all LLM/network calls are mocked).
 
 ---
 
@@ -266,9 +326,9 @@ python -m unittest discover -s tests
 | M2 Deck Planner + Layout Selector (8 layouts) | ✅ done |
 | M3 Chart Builder (native, editable, D7 types) | ✅ done |
 | M4 Diagram Builder (chevron process-flow, native, editable) | ✅ done |
-| M5 QA / overflow checker | ⏳ next |
-| M6 Revision engine (field edit / regen) | ⏳ planned |
-| M7 Second tenant (prove tenant-agnosticism) | ⏳ planned |
+| M5 QA / overflow checker | ✅ done |
+| M6 Revision engine (field edit / regen) | ✅ done |
+| M7 Second tenant (prove tenant-agnosticism) | ✅ done |
 
 ### Known limitations (today)
 
@@ -295,6 +355,30 @@ python -m unittest discover -s tests
   `think: false` forced on every call (fixed in `llm_providers.py`) since they'll
   otherwise burn the whole token budget on a hidden reasoning trace before
   writing any real content.
+- **Overflow detection (M5) is a reasoned estimate, not a pixel-exact
+  measurement.** `python-pptx` can't run PowerPoint's text-layout engine, so
+  the QA checker estimates wrapped-line height from a standard proportional-
+  font heuristic rather than a real render. It also compares against a *safe
+  growth budget* (box height + real headroom to the next element), not the
+  box's raw height — every text/bullets shape in this template auto-grows to
+  fit its text (`SHAPE_TO_FIT_TEXT`) rather than clipping, so that's the
+  actually-correct comparison. False positives are fine (routes to review);
+  the manifest's own conservative `max_chars`/`max_items` per slot mean most
+  normal content never gets close to the flag threshold in practice.
+- **Field-edit revision (M6) only targets text slots, not bullets lists.** A
+  bullets ask ("add a point about X", "reorder these") is a structural
+  decision, not a single value fill-in, so it always routes to a full
+  regeneration instead — this happens automatically, you don't need to know
+  the distinction. Deck-level "narrative + neighboring headlines" context for
+  regeneration is also a simplified stand-in today (whatever context string
+  the caller passes) since there's no persisted deck/narrative object yet.
+- **`meridian`'s template was built programmatically, not hand-designed (M7).**
+  There's no design software in this build environment, so `tools/
+  build_meridian_template.py` stands in for the manual "build it in PowerPoint"
+  onboarding step — it's a structurally real, independently-branded template
+  (not a copy of the reference one), just visually plain. Onboarding a third,
+  real tenant is still a manual step (register it in `config.py`); there's no
+  self-serve template-builder wizard yet (that's a v2 roadmap item).
 
 For the full "why" behind every decision, read
 [DOCS/02_system_design_document.md](DOCS/02_system_design_document.md).

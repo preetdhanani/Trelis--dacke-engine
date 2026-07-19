@@ -1,0 +1,398 @@
+{
+  "template_name": "Meridian Partners Deck",
+  "template_version": "1.0",
+  "pipeline": "Claude -> JSON slide-specs -> python-pptx renderer",
+  "fill_protocol": [
+    "1. Pick a layout by 'layout_id'.",
+    "2. Duplicate the matching template slide (slide_index).",
+    "3. For each slot, find the shape where shape.name == slot.shape_name.",
+    "4. text  -> set run text on that shape.",
+    "5. bullets -> one paragraph per item (respect max_items / max_chars_per_item).",
+    "6. image -> insert a picture at slot.geometry_in (inches); remove the grey placeholder rect.",
+    "7. Never add unnamed shapes; never rename existing ones."
+  ],
+  "brand": {
+    "colors": {
+      "primary": "0E6E5C",
+      "teal_primary": "0E6E5C",
+      "amber_accent": "E2892A",
+      "ink": "1B1B1B",
+      "muted": "707070",
+      "surface": "FFFFFF",
+      "placeholder_fill": "E7E7E7"
+    },
+    "wordmark": "MERIDIAN PARTNERS",
+    "claims": [
+      "Clarity you can act on."
+    ],
+    "fonts": {
+      "display": "Georgia",
+      "body": "Verdana",
+      "note": "Distinct stand-in fonts (vs the reference tenant's Cambria/Calibri) -- proves font inheritance is manifest/template-driven, not hardcoded anywhere in the renderer (M7)."
+    }
+  },
+  "slide_dimensions_in": {
+    "width": 13.333,
+    "height": 7.5
+  },
+  "shape_name_convention": "MP_<LAYOUT>_<SLOT>  (uppercase; unique per slide)",
+  "layouts": [
+    {
+      "layout_id": "quote_callout",
+      "slide_index": 0,
+      "title": "Quote / Callout",
+      "use_when": "A pull quote, client testimonial, or single big statement.",
+      "slots": [
+        {
+          "shape_name": "MP_QUOTE_CALLOUT_STATEMENT",
+          "geometry_in": {
+            "left_in": 1.4,
+            "top_in": 2.05,
+            "width_in": 10.53,
+            "height_in": 2.85
+          },
+          "type": "text",
+          "role": "quote",
+          "required": true,
+          "max_chars": 160
+        },
+        {
+          "shape_name": "MP_QUOTE_CALLOUT_BYLINE",
+          "geometry_in": {
+            "left_in": 1.42,
+            "top_in": 5.0,
+            "width_in": 10.0,
+            "height_in": 0.6
+          },
+          "type": "text",
+          "role": "attribution",
+          "required": false,
+          "max_chars": 70
+        }
+      ]
+    },
+    {
+      "layout_id": "title",
+      "slide_index": 1,
+      "title": "Title Slide",
+      "use_when": "Opening slide of any deck.",
+      "slots": [
+        {
+          "shape_name": "MP_TITLE_HEADLINE",
+          "geometry_in": {
+            "left_in": 0.75,
+            "top_in": 4.0,
+            "width_in": 11.83,
+            "height_in": 1.2
+          },
+          "type": "text",
+          "role": "deck_title",
+          "required": true,
+          "max_chars": 70
+        },
+        {
+          "shape_name": "MP_TITLE_SUBHEAD",
+          "geometry_in": {
+            "left_in": 0.77,
+            "top_in": 5.2,
+            "width_in": 11.4,
+            "height_in": 0.7
+          },
+          "type": "text",
+          "role": "subtitle",
+          "required": false,
+          "max_chars": 110
+        },
+        {
+          "shape_name": "MP_TITLE_TAGLINE",
+          "geometry_in": {
+            "left_in": 0.77,
+            "top_in": 2.6,
+            "width_in": 8.2,
+            "height_in": 0.5
+          },
+          "type": "text",
+          "role": "claim",
+          "required": false,
+          "allowed_values": [
+            "Clarity you can act on."
+          ]
+        },
+        {
+          "shape_name": "MP_TITLE_METALINE",
+          "geometry_in": {
+            "left_in": 0.77,
+            "top_in": 6.65,
+            "width_in": 11.4,
+            "height_in": 0.5
+          },
+          "type": "text",
+          "role": "meta_line",
+          "required": false,
+          "max_chars": 90
+        }
+      ]
+    },
+    {
+      "layout_id": "closing_contact",
+      "slide_index": 2,
+      "title": "Closing / Contact",
+      "use_when": "Final slide -- wordmark, claim, contact block.",
+      "slots": [
+        {
+          "shape_name": "MP_CLOSING_CONTACT_DETAILS",
+          "geometry_in": {
+            "left_in": 0.77,
+            "top_in": 4.65,
+            "width_in": 11.4,
+            "height_in": 1.6
+          },
+          "type": "text",
+          "role": "contact_block",
+          "required": true,
+          "max_chars": 220,
+          "note": "Newline-separated lines: name / role / email x phone."
+        }
+      ]
+    },
+    {
+      "layout_id": "text_bullets",
+      "slide_index": 3,
+      "title": "Text + Bullets (no image)",
+      "use_when": "Pure argument / list slide with no visual.",
+      "slots": [
+        {
+          "shape_name": "MP_TEXT_BULLETS_HEADLINE",
+          "geometry_in": {
+            "left_in": 0.75,
+            "top_in": 1.1,
+            "width_in": 11.83,
+            "height_in": 0.9
+          },
+          "type": "text",
+          "role": "title",
+          "required": true,
+          "max_chars": 60
+        },
+        {
+          "shape_name": "MP_TEXT_BULLETS_KICKER",
+          "geometry_in": {
+            "left_in": 0.77,
+            "top_in": 2.0,
+            "width_in": 11.83,
+            "height_in": 0.5
+          },
+          "type": "text",
+          "role": "kicker",
+          "required": false,
+          "max_chars": 90
+        },
+        {
+          "shape_name": "MP_TEXT_BULLETS_LIST",
+          "geometry_in": {
+            "left_in": 0.77,
+            "top_in": 2.7,
+            "width_in": 11.83,
+            "height_in": 3.95
+          },
+          "type": "bullets",
+          "role": "body",
+          "required": true,
+          "max_items": 6,
+          "max_chars_per_item": 95
+        }
+      ]
+    },
+    {
+      "layout_id": "exhibit_data",
+      "slide_index": 4,
+      "title": "Exhibit / Data",
+      "use_when": "A chart or table with a so-what takeaway and source.",
+      "slots": [
+        {
+          "shape_name": "MP_EXHIBIT_DATA_HEADLINE",
+          "geometry_in": {
+            "left_in": 0.75,
+            "top_in": 1.1,
+            "width_in": 11.83,
+            "height_in": 0.85
+          },
+          "type": "text",
+          "role": "title",
+          "required": true,
+          "max_chars": 60
+        },
+        {
+          "shape_name": "MP_EXHIBIT_DATA_VISUAL",
+          "geometry_in": {
+            "left_in": 0.77,
+            "top_in": 2.05,
+            "width_in": 8.6,
+            "height_in": 4.4
+          },
+          "type": "image",
+          "role": "exhibit",
+          "required": true,
+          "fit": "contain",
+          "note": "Insert chart/table image, or overlay a native chart at this geometry."
+        },
+        {
+          "shape_name": "MP_EXHIBIT_DATA_TAKEAWAY",
+          "geometry_in": {
+            "left_in": 9.55,
+            "top_in": 2.05,
+            "width_in": 2.78,
+            "height_in": 4.05
+          },
+          "type": "text",
+          "role": "takeaway",
+          "required": true,
+          "max_chars": 180
+        },
+        {
+          "shape_name": "MP_EXHIBIT_DATA_SOURCE",
+          "geometry_in": {
+            "left_in": 0.77,
+            "top_in": 6.5,
+            "width_in": 9.2,
+            "height_in": 0.4
+          },
+          "type": "text",
+          "role": "source",
+          "required": false,
+          "max_chars": 120
+        }
+      ]
+    },
+    {
+      "layout_id": "image_only",
+      "slide_index": 5,
+      "title": "Image Only",
+      "use_when": "A single dominant visual -- exhibit photo, diagram, screenshot.",
+      "slots": [
+        {
+          "shape_name": "MP_IMAGE_ONLY_HERO",
+          "geometry_in": {
+            "left_in": 0.75,
+            "top_in": 0.85,
+            "width_in": 11.83,
+            "height_in": 5.45
+          },
+          "type": "image",
+          "role": "hero_image",
+          "required": true,
+          "fit": "cover",
+          "note": "Replace this placeholder rectangle; use its geometry."
+        },
+        {
+          "shape_name": "MP_IMAGE_ONLY_CAPTION",
+          "geometry_in": {
+            "left_in": 0.77,
+            "top_in": 6.4,
+            "width_in": 9.2,
+            "height_in": 0.5
+          },
+          "type": "text",
+          "role": "caption",
+          "required": false,
+          "max_chars": 110
+        }
+      ]
+    },
+    {
+      "layout_id": "section_divider",
+      "slide_index": 6,
+      "title": "Section Divider",
+      "use_when": "Break between major sections of the deck.",
+      "slots": [
+        {
+          "shape_name": "MP_SECTION_DIVIDER_NUM",
+          "geometry_in": {
+            "left_in": 0.75,
+            "top_in": 2.0,
+            "width_in": 3.0,
+            "height_in": 1.4
+          },
+          "type": "text",
+          "role": "section_number",
+          "required": true,
+          "max_chars": 3
+        },
+        {
+          "shape_name": "MP_SECTION_DIVIDER_HEADLINE",
+          "geometry_in": {
+            "left_in": 0.77,
+            "top_in": 3.35,
+            "width_in": 11.83,
+            "height_in": 1.6
+          },
+          "type": "text",
+          "role": "section_title",
+          "required": true,
+          "max_chars": 48
+        },
+        {
+          "shape_name": "MP_SECTION_DIVIDER_KICKER",
+          "geometry_in": {
+            "left_in": 0.8,
+            "top_in": 5.0,
+            "width_in": 11.4,
+            "height_in": 0.6
+          },
+          "type": "text",
+          "role": "kicker",
+          "required": false,
+          "max_chars": 90
+        }
+      ]
+    },
+    {
+      "layout_id": "two_column",
+      "slide_index": 7,
+      "title": "Two-Column (text + image)",
+      "use_when": "Narrative on the left, supporting visual on the right.",
+      "slots": [
+        {
+          "shape_name": "MP_TWO_COLUMN_HEADLINE",
+          "geometry_in": {
+            "left_in": 0.75,
+            "top_in": 1.1,
+            "width_in": 11.83,
+            "height_in": 0.9
+          },
+          "type": "text",
+          "role": "title",
+          "required": true,
+          "max_chars": 60
+        },
+        {
+          "shape_name": "MP_TWO_COLUMN_BODY",
+          "geometry_in": {
+            "left_in": 0.77,
+            "top_in": 2.3,
+            "width_in": 5.85,
+            "height_in": 4.15
+          },
+          "type": "bullets",
+          "role": "body",
+          "required": true,
+          "max_items": 5,
+          "max_chars_per_item": 80
+        },
+        {
+          "shape_name": "MP_TWO_COLUMN_VISUAL",
+          "geometry_in": {
+            "left_in": 6.8,
+            "top_in": 2.1,
+            "width_in": 5.78,
+            "height_in": 4.4
+          },
+          "type": "image",
+          "role": "support_image",
+          "required": true,
+          "fit": "cover"
+        }
+      ]
+    }
+  ]
+}

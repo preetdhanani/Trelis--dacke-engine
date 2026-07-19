@@ -13,6 +13,7 @@
   ],
   "brand": {
     "colors": {
+      "primary": "0957D1",
       "blue_primary": "0957D1",
       "red_accent": "FF3531",
       "ink": "111111",

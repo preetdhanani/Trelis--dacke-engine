@@ -11,7 +11,8 @@ their named shapes, so the model never touches design — it only supplies text 
 data inside tight, template-defined limits. That division of labor is what keeps
 output good (see [Why the output stays good](#why-the-output-stays-good)).
 
-> **Status:** M0–M7 built and verified end-to-end (Anthropic, Gemini, and local
+> **Status:** [`v1.0.0`](https://github.com/preetdhanani/Trelis--dacke-engine/releases/tag/v1.0.0)
+> released — M0–M7 built and verified end-to-end (Anthropic, Gemini, and local
 > Ollama) — **v1 is feature-complete.** See [Status & roadmap](#status--roadmap)
 > for what's next (v2).
 > The full design rationale lives in
@@ -19,9 +20,26 @@ output good (see [Why the output stays good](#why-the-output-stays-good)).
 
 ---
 
+## Getting started
+
+```bash
+git clone https://github.com/preetdhanani/Trelis--dacke-engine.git
+cd Trelis--dacke-engine
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Then either run the interactive console (easiest first run — see
+[Quickstart](#quickstart-interactive)) or the scripted CLI (see
+[Unattended CLI](#unattended-cli)).
+
+---
+
 ## Requirements
 
-- **Python 3.13** (tested on 3.13.14)
+- **Python 3.13** (tested on 3.13.14; 3.9 also works in practice — no
+  version-specific language features are used)
 - Three dependencies only — `pip install -r requirements.txt`:
   - `python-pptx` (rendering + native charts)
   - `anthropic` (only needed if you use `--provider anthropic`)
